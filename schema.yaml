@@ -1,4 +1,5 @@
 openapi: 3.1.0
+
 info:
   title: Grocy API (Limited + Enriched via Cloudflare Worker)
   description: >
@@ -8,7 +9,7 @@ info:
   version: "1.2.0"
 
 servers:
-  - url: https://grocy-butler
+  - url: https://grocy-butler.joshscomputer.com
 
 components:
   schemas:
@@ -26,11 +27,7 @@ components:
         best_before_date:
           type: string
           format: date
-      required:
-        - stock_id
-        - product_id
-        - product_name
-        - amount
+      required: [stock_id, product_id, product_name, amount]
 
     EnrichedShoppingList:
       type: object
@@ -42,16 +39,12 @@ components:
               type: integer
             name:
               type: string
-          required:
-            - id
-            - name
+          required: [id, name]
         items:
           type: array
           items:
             $ref: "#/components/schemas/EnrichedShoppingListItem"
-      required:
-        - list
-        - items
+      required: [list, items]
 
     EnrichedShoppingListItem:
       type: object
@@ -64,10 +57,7 @@ components:
           type: number
         note:
           type: string
-      required:
-        - product_id
-        - product_name
-        - amount
+      required: [product_id, product_name, amount]
 
     MultipleShoppingLists:
       type: object
@@ -84,12 +74,8 @@ components:
                 type: integer
               name:
                 type: string
-            required:
-              - id
-              - name
-      required:
-        - error
-        - lists
+            required: [id, name]
+      required: [error, lists]
 
     ProductNotFound:
       type: object
@@ -99,9 +85,7 @@ components:
           enum: [product_not_found]
         product:
           type: string
-      required:
-        - error
-        - product
+      required: [error, product]
 
     MultipleProducts:
       type: object
@@ -118,38 +102,32 @@ components:
                 type: integer
               name:
                 type: string
-            required:
-              - id
-              - name
-      required:
-        - error
-        - products
+            required: [id, name]
+      required: [error, products]
 
-last_store:
-  type: string
-  nullable: true
+    EnrichedProductSearchResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+      required: [id, name, confidence]
 
-pricing:
-  type: object
-  properties:
-    last_price_per_price_unit:
-      type: number
-      nullable: true
-    price_unit:
-      type: string
-      nullable: true
-    price_qu_id:
-      type: integer
-      nullable: true
-    shopping_list_qu_id:
-      type: integer
-      nullable: true
-    purchase_to_stock_factor:
-      type: number
-      nullable: true
-    price_to_stock_factor:
-      type: number
-      nullable: true
+    EnrichedProductSearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/EnrichedProductSearchResult"
+      required: [query, matches]
 
   securitySchemes:
     BearerAuth:
@@ -160,13 +138,85 @@ security:
   - BearerAuth: []
 
 paths:
+
+  /api/enriched/products/create:
+    post:
+      summary: Create a new product (enriched)
+      description: >
+        Creates a new product using human-readable fields.
+        Resolves mandatory location and quantity units.
+        Optionally attaches a product image via URL.
+        Performs de-duplication and cache-safe writes.
+      operationId: createProductEnriched
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Product name (must be unique)
+                description:
+                  type: string
+                default_location:
+                  type: string
+                  description: Human-readable location name
+                quantity_units:
+                  type: object
+                  properties:
+                    stock:
+                      type: string
+                    purchase:
+                      type: string
+                    consume:
+                      type: string
+                    price:
+                      type: string
+                  description: Human-readable quantity unit names
+                product_group:
+                  type: string
+                image_url:
+                  type: string
+                  format: uri
+              required: [name]
+      responses:
+        "200":
+          description: Product created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [created]
+                  product:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                    required: [id, name]
+                  image:
+                    type: object
+                    properties:
+                      attached:
+                        type: boolean
+                    required: [attached]
+                required: [status, product]
+        "400":
+          description: Invalid request or duplicate product
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
   /api/enriched/stock:
     get:
       summary: Get inventory
-      description: >
-        Returns a denormalized, GPT-safe view of inventory with product names
-        resolved. Results are limited and enriched server-side by the
-        Cloudflare Worker.
       operationId: getStock
       responses:
         "200":
@@ -177,26 +227,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EnrichedStockItem"
-        "401":
-          description: Unauthorized
-        "502":
-          description: Upstream Grocy error
 
   /api/enriched/shopping_list:
     get:
       summary: Get shopping list (enriched)
-      description: >
-        Returns a GPT-safe, denormalized shopping list with product names
-        resolved. If exactly one shopping list exists, it is selected
-        automatically. If multiple shopping lists exist and no list_id is
-        provided, an error listing available lists is returned.
       operationId: getShoppingList
       parameters:
         - name: list_id
           in: query
-          required: false
-          description: >
-            Explicit shopping list ID to use when multiple lists exist.
           schema:
             type: integer
       responses:
@@ -208,74 +246,35 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/EnrichedShoppingList"
                   - $ref: "#/components/schemas/MultipleShoppingLists"
-        "400":
-          description: Invalid shopping list ID
-        "401":
-          description: Unauthorized
-        "502":
-          description: Upstream Grocy error
 
-  /api/objects/products:
+  /api/enriched/products/search:
     get:
-      summary: List all products
-      operationId: listProducts
+      summary: Search products (enriched)
+      operationId: searchProducts
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 5
+            minimum: 1
+            maximum: 10
       responses:
         "200":
-          description: Products retrieved
+          description: Product search results
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties: {}
-                  additionalProperties: true
-
-    post:
-      summary: Create a new product
-      operationId: createProduct
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                product_group_id:
-                  type: integer
-              required:
-                - name
-      responses:
-        "200":
-          description: Product created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: {}
-                additionalProperties: true
-        "201":
-          description: Product created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: {}
-                additionalProperties: true
+                $ref: "#/components/schemas/EnrichedProductSearchResponse"
 
   /api/enriched/shopping_list/add:
     post:
       summary: Add item to shopping list (enriched)
-      description: >
-        Adds an item to a shopping list using a human-readable product name.
-        The product must already exist in Grocy.
-        If exactly one shopping list exists, it is selected automatically.
-        If multiple shopping lists exist and no list_id is provided, an error
-        listing available lists is returned.
       operationId: addToShoppingList
       requestBody:
         required: true
@@ -286,69 +285,13 @@ paths:
               properties:
                 product:
                   type: string
-                  description: Exact product name (case-insensitive)
                 amount:
                   type: number
-                  description: Quantity to add
                 note:
                   type: string
-                  description: Optional note
                 shopping_list_id:
                   type: integer
-                  description: Optional shopping list ID
-              required:
-                - product
-                - amount
-      responses:
-        "200":
-          description: Item added or structured error returned
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - type: object
-                    properties:
-                      status:
-                        type: string
-                        enum: [added]
-                      list:
-                        type: object
-                        properties:
-                          id:
-                            type: integer
-                          name:
-                            type: string
-                        required:
-                          - id
-                          - name
-                      item:
-                        type: object
-                        properties:
-                          product_id:
-                            type: integer
-                          product_name:
-                            type: string
-                          amount:
-                            type: number
-                          note:
-                            type: string
-                        required:
-                          - product_id
-                          - product_name
-                          - amount
-                    required:
-                      - status
-                      - list
-                      - item
-                  - $ref: "#/components/schemas/ProductNotFound"
-                  - $ref: "#/components/schemas/MultipleProducts"
-                  - $ref: "#/components/schemas/MultipleShoppingLists"
-        "400":
-          description: Invalid request or invalid shopping list ID
-        "401":
-          description: Unauthorized
-        "502":
-          description: Upstream Grocy error
+              required: [product, amount]
 
   /api/objects/products/{productId}/add:
     post:
@@ -372,12 +315,3 @@ paths:
                 best_before_date:
                   type: string
                   format: date
-      responses:
-        "200":
-          description: Inventory updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: {}
-                additionalProperties: true
