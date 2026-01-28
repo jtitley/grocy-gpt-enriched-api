@@ -9,6 +9,9 @@ info:
     Enriched endpoints provide denormalized, human-readable responses
     with fuzzy resolution and partial-success semantics.
 
+    Clients should treat ambiguity responses as terminal and
+    request user clarification before retrying.
+
     IMPORTANT BEHAVIOUR NOTES:
     - Product name resolution is fuzzy and may be ambiguous.
     - Bulk operations may partially succeed.
@@ -178,6 +181,26 @@ components:
             $ref: "#/components/schemas/EnrichedProductSearchResult"
       required: [query, matches]
 
+responses:
+
+  EnrichedStockResponse:
+    description: Enriched inventory retrieved
+    content:
+      application/json:
+        schema:
+          type: array
+          items:
+            $ref: "#/components/schemas/EnrichedStockItem"
+
+  ProductResolutionError:
+    description: Product resolution failed
+    content:
+      application/json:
+        schema:
+          oneOf:
+            - $ref: "#/components/schemas/ProductNotFound"
+            - $ref: "#/components/schemas/MultipleProducts"
+
 paths:
 
   # =============================
@@ -207,6 +230,7 @@ paths:
   /api/enriched/stock/add:
     post:
       summary: Add inventory (enriched)
+      x-stop-on-ambiguity: true
       description: >
         Adds inventory using a fuzzy product name match.
         If multiple products match, the client must stop
@@ -257,6 +281,7 @@ paths:
   /api/enriched/stock/add/bulk:
     post:
       summary: Add inventory in bulk
+      x-stop-on-ambiguity: true
       description: >
         Adds multiple inventory items in a single request.
         Each line is processed independently.
@@ -296,7 +321,58 @@ paths:
               required: [items]
       responses:
         "200":
-          description: Bulk operation completed
+          $ref: "#/components/responses/EnrichedStockResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [completed]
+                  summary:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      added:
+                        type: integer
+                      errors:
+                        type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required: [status, summary, results]
+              examples:
+                mixed_result:
+                  summary: Some items added, some failed
+                  value:
+                    status: completed
+                    summary:
+                      total: 3
+                      added: 2
+                      errors: 1
+                    results:
+                      - line: 1
+                        status: added
+                        product:
+                          id: 12
+                          name: Milk
+                      - line: 2
+                        status: error
+                        error: multiple_products
+                        candidates:
+                          - id: 8
+                            name: Cream
+                          - id: 9
+                            name: Cooking Cream
+                      - line: 3
+                        status: added
+                        product:
+                          id: 5
+                          name: Bread
         "401":
           description: Unauthorized
         "502":
@@ -331,6 +407,7 @@ paths:
   /api/enriched/shopping_list/add:
     post:
       summary: Add item to shopping list (enriched)
+      x-stop-on-ambiguity: true
       operationId: addToShoppingList
       requestBody:
         required: true
