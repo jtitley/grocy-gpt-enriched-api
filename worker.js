@@ -14,13 +14,21 @@ export default {
     const url = new URL(req.url);
     const upstreamBase = env.UPSTREAM_BASE;
     const CACHE_VERSION = "v1.1";
+    const CACHE_DURATION = env.CACHE_DURATION || 21600;
 
-    const headers = {
+    const JSONHeaders = {
       "Host": upstreamBase,
       "CF-Access-Client-Id": env.CF_ACCESS_CLIENT_ID,
       "CF-Access-Client-Secret": env.CF_ACCESS_CLIENT_SECRET,
       "GROCY-API-KEY": env.GROCY_API_KEY,
       "Content-Type": "application/json"
+    };
+
+    const fileHeaders = {
+      "Host": upstreamBase,
+      "CF-Access-Client-Id": env.CF_ACCESS_CLIENT_ID,
+      "CF-Access-Client-Secret": env.CF_ACCESS_CLIENT_SECRET,
+      "GROCY-API-KEY": env.GROCY_API_KEY
     };
 
     const DEFAULT_LOCATION_NAME = env.DEFAULT_LOCATION_NAME || "Fridge";
@@ -54,7 +62,7 @@ export default {
       cached = new Response(await resp.text(), {
         headers: {
           "Content-Type": "application/json",
-          "Cache-Control": "max-age=21600"
+          "Cache-Control": "max-age=" + CACHE_DURATION
         }
       });
     
@@ -95,7 +103,7 @@ export default {
       // 1️⃣ Resolve shopping list (reuse your logic)
       const listsResp = await fetch(
         `${upstreamBase}/api/objects/shopping_lists`,
-        { headers }
+        { headers: JSONHeaders }
       );
 
       const lists = await listsResp.json();
@@ -119,7 +127,7 @@ export default {
 
       // 2️⃣ Resolve product (fuzzy, cached, GPT-safe)
       const cache = caches.default;
-      const products = await getCachedProducts(env, headers, cache, CACHE_VERSION);
+      const products = await getCachedProducts(env, JSONHeaders, cache, CACHE_VERSION);
 
       const query = normalize(product);
 
@@ -157,7 +165,7 @@ export default {
         `${upstreamBase}/api/stock/shoppinglist/add-product`,
         {
           method: "POST",
-          headers,
+          headers: JSONHeaders,
           body: JSON.stringify({
             product_id: productId,
             product_amount: amount,
@@ -194,7 +202,7 @@ export default {
       // 1️⃣ Fetch shopping lists
       const listsResp = await fetch(
         `${upstreamBase}/api/objects/shopping_lists`,
-        { headers }
+        { headers: JSONHeaders }
       );
 
       if (!listsResp.ok) {
@@ -228,7 +236,7 @@ export default {
       // 3️⃣ Fetch shopping list items
       const itemsResp = await fetch(
         `${upstreamBase}/api/objects/shopping_list?list_id=${selectedList.id}`,
-        { headers }
+        { headers: JSONHeaders }
       );
 
       if (!itemsResp.ok) {
@@ -250,13 +258,13 @@ export default {
       let productsRespCached = await cache.match(productsCacheKey);
 
       if (!productsRespCached) {
-        const resp = await fetch(`${upstreamBase}/api/objects/products`, { headers });
+        const resp = await fetch(`${upstreamBase}/api/objects/products`, { headers: JSONHeaders });
         if (!resp.ok) {
           return new Response("Failed to fetch products", { status: 502 });
         }
 
         productsRespCached = new Response(await resp.text(), {
-          headers: { "Content-Type": "application/json", "Cache-Control": "max-age=21600" }
+          headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + CACHE_DURATION }
         });
 
         await cache.put(productsCacheKey, productsRespCached.clone());
@@ -272,7 +280,7 @@ export default {
       if (!storesRespCached) {
         const resp = await fetch(
           `${upstreamBase}/api/objects/shopping_locations`,
-          { headers }
+          { headers: JSONHeaders }
         );
 
         if (!resp.ok) {
@@ -280,7 +288,7 @@ export default {
         }
 
         storesRespCached = new Response(await resp.text(), {
-          headers: { "Content-Type": "application/json", "Cache-Control": "max-age=21600" }
+          headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + CACHE_DURATION }
         });
 
         await cache.put(storesCacheKey, storesRespCached.clone());
@@ -299,7 +307,7 @@ export default {
         if (!cached) {
           const resp = await fetch(
             `${upstreamBase}/api/stock/products/${productId}`,
-            { headers }
+            { headers: JSONHeaders }
           );
           if (!resp.ok) return;
 
@@ -391,7 +399,7 @@ export default {
       // 1️⃣ Fetch stock (Grocy object API)
       const stockResp = await fetch(
         `${upstreamBase}/api/objects/stock`,
-        { headers }
+        { headers: JSONHeaders }
       );
 
       if (!stockResp.ok) {
@@ -420,7 +428,7 @@ export default {
       // 4️⃣ Fetch ALL products once (Worker-only, safe)
       const productsResp = await fetch(
         `${upstreamBase}/api/objects/products`,
-        { headers }
+        { headers: JSONHeaders }
       );
 
       if (!productsResp.ok) {
@@ -472,7 +480,7 @@ export default {
 
       let products;
       try {
-        products = await getCachedProducts(env, headers, cache, CACHE_VERSION);
+        products = await getCachedProducts(env, JSONHeaders, cache, CACHE_VERSION);
       } catch (err) {
         return new Response("Failed to fetch products", { status: 502 });
       }
@@ -525,7 +533,7 @@ export default {
       //
       // 1️⃣ De-dupe check (exact name, normalized)
       //
-      const products = await getCachedProducts(env, headers, cache, CACHE_VERSION);
+      const products = await getCachedProducts(env, JSONHeaders, cache, CACHE_VERSION);
       const normalizedName = normalize(name);
 
       if (products.some(p => normalize(p.name) === normalizedName)) {
@@ -548,7 +556,7 @@ export default {
       if (!locRespCached) {
         const resp = await fetch(
           `${upstreamBase}/api/objects/locations`,
-          { headers }
+          { headers: JSONHeaders }
         );
         if (!resp.ok) {
           return new Response("Failed to fetch locations", { status: 502 });
@@ -557,7 +565,7 @@ export default {
         locRespCached = new Response(await resp.text(), {
           headers: {
             "Content-Type": "application/json",
-            "Cache-Control": "max-age=21600"
+            "Cache-Control": "max-age=" + CACHE_DURATION
           }
         });
 
@@ -587,7 +595,7 @@ export default {
       if (!quRespCached) {
         const resp = await fetch(
           `${upstreamBase}/api/objects/quantity_units`,
-          { headers }
+          { headers: JSONHeaders }
         );
         if (!resp.ok) {
           return new Response("Failed to fetch quantity units", { status: 502 });
@@ -596,7 +604,7 @@ export default {
         quRespCached = new Response(await resp.text(), {
           headers: {
             "Content-Type": "application/json",
-            "Cache-Control": "max-age=21600"
+            "Cache-Control": "max-age=" + CACHE_DURATION
           }
         });
 
@@ -635,7 +643,7 @@ export default {
       if (product_group) {
         const pgResp = await fetch(
           `${upstreamBase}/api/objects/product_groups`,
-          { headers }
+          { headers: JSONHeaders }
         );
         if (!pgResp.ok) {
           return new Response("Failed to fetch product groups", { status: 502 });
@@ -663,7 +671,7 @@ export default {
         `${upstreamBase}/api/objects/products`,
         {
           method: "POST",
-          headers,
+          headers: JSONHeaders,
           body: JSON.stringify({
             name,
             description,
@@ -688,32 +696,49 @@ export default {
       // 6️⃣ Optional image upload (best-effort)
       //
       let imageAttached = false;
+      let imageError = null;
 
       if (image_url) {
         try {
           const imgResp = await fetch(image_url);
-          const ct = imgResp.headers.get("content-type") || "";
 
-          if (imgResp.ok && ct.startsWith("image/")) {
-            const blob = await imgResp.blob();
-            const form = new FormData();
-            form.append("file", blob, "product.jpg");
-
-            const uploadResp = await fetch(
-              `${upstreamBase}/api/files/productpictures/${productId}`,
-              {
-                method: "POST",
-                headers: {
-                  ...headers,
-                  "Content-Type": undefined
-                },
-                body: form
-              }
-            );
-
-            imageAttached = uploadResp.ok;
+          if (!imgResp.ok) {
+            throw new Error(`image fetch failed (${imgResp.status})`);
           }
-        } catch (_) {}
+
+          const size = Number(imgResp.headers.get("content-length") || 0);
+          if (size > 5_000_000) {
+            throw new Error("image too large");
+          }
+
+          const ct = imgResp.headers.get("content-type") || "";
+          if (!ct.startsWith("image/")) {
+            throw new Error(`invalid content-type (${ct})`);
+          }
+
+          const blob = await imgResp.blob();
+          const form = new FormData();
+          form.append("file", blob, "product.jpg");
+
+          const uploadResp = await fetch(
+            `${upstreamBase}/api/files/productpictures/${productId}`,
+            {
+              method: "POST",
+              headers: fileHeaders, // 🔥 IMPORTANT
+              body: form
+            }
+          );
+
+          if (!uploadResp.ok) {
+            const text = await uploadResp.text();
+            throw new Error(`upload failed (${uploadResp.status}): ${text}`);
+          }
+
+          imageAttached = true;
+        } catch (err) {
+          imageError = err.message;
+          console.log("Image upload failed:", imageError);
+        }
       }
 
       //
@@ -740,10 +765,318 @@ export default {
           consume: resolvedUnits.consume.name,
           price: resolvedUnits.price.name
         },
-        image: { attached: imageAttached }
+        image: {
+           attached: imageAttached,
+           error: imageError 
+         }
       }), { headers: { "Content-Type": "application/json" }});
     }
 
+    //
+    // --- ENRICHED STOCK ADD (RECEIPT-FRIENDLY) ---
+    //
+    if (url.pathname === "/api/enriched/stock/add" && req.method === "POST") {
+      const body = await req.json();
+      const {
+        product,
+        amount,
+        unit,
+        price,
+        store,
+        best_before_date
+      } = body;
+
+      if (!product || typeof amount !== "number") {
+        return new Response("Invalid request", { status: 400 });
+      }
+
+      const cache = caches.default;
+
+      //
+      // 1️⃣ Resolve product (fuzzy, cached)
+      //
+      const products = await getCachedProducts(env, JSONHeaders, cache, CACHE_VERSION);
+      const query = normalize(product);
+
+      const matches = products
+        .map(p => ({
+          id: p.id,
+          name: p.name,
+          score: p.name ? scoreProduct(normalize(p.name), query) : 0
+        }))
+        .filter(p => p.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+
+      if (matches.length === 0) {
+        return new Response(JSON.stringify({
+          error: "product_not_found",
+          product
+        }), { headers: { "Content-Type": "application/json" }});
+      }
+
+      if (matches.length > 1 && matches[0].score < 100) {
+        return new Response(JSON.stringify({
+          error: "multiple_products",
+          products: matches.map(m => ({
+            id: m.id,
+            name: m.name
+          }))
+        }), { headers: { "Content-Type": "application/json" }});
+      }
+
+      const productId = matches[0].id;
+
+      //
+      // 2️⃣ Fetch product details (for unit + conversion context)
+      //
+      const detailsResp = await fetch(
+        `${upstreamBase}/api/stock/products/${productId}`,
+        { headers: JSONHeaders }
+      );
+
+      if (!detailsResp.ok) {
+        return new Response("Failed to fetch product details", { status: 502 });
+      }
+
+      const details = await detailsResp.json();
+
+      // Default to stock unit unless overridden
+      const quId =
+        details.product?.qu_id_stock ??
+        details.qu_id_stock;
+
+      //
+      // 3️⃣ Add stock
+      //
+      const addResp = await fetch(
+        `${upstreamBase}/api/objects/products/${productId}/add`,
+        {
+          method: "POST",
+          headers: JSONHeaders,
+          body: JSON.stringify({
+            amount,
+            best_before_date,
+            qu_id: quId
+          })
+        }
+      );
+
+      if (!addResp.ok) {
+        return new Response("Failed to add stock", { status: 502 });
+      }
+
+      //
+      // 4️⃣ Optional: update price (if provided)
+      //
+      if (typeof price === "number") {
+        await fetch(
+          `${upstreamBase}/api/objects/product_prices`,
+          {
+            method: "POST",
+            headers: JSONHeaders,
+            body: JSON.stringify({
+              product_id: productId,
+              price,
+              store_id: details.last_shopping_location_id ?? null
+            })
+          }
+        );
+      }
+
+      //
+      // 5️⃣ Enriched confirmation
+      //
+      return new Response(JSON.stringify({
+        status: "added",
+        product: {
+          id: productId,
+          name: matches[0].name
+        },
+        interpreted_as: {
+          amount,
+          unit: details.quantity_unit_stock?.name ?? "stock unit",
+          price
+        }
+      }), { headers: { "Content-Type": "application/json" }});
+    }
+
+    //
+    // --- ENRICHED BULK STOCK ADD (RECEIPT-FRIENDLY) ---
+    //
+    if (url.pathname === "/api/enriched/stock/add/bulk" && req.method === "POST") {
+      const body = await req.json();
+      const { store, purchased_at, items } = body;
+
+      if (!Array.isArray(items) || items.length === 0) {
+        return new Response("Invalid request", { status: 400 });
+      }
+
+      const MAX_ITEMS = 25;
+      const safeItems = items.slice(0, MAX_ITEMS);
+
+      const cache = caches.default;
+      const products = await getCachedProducts(env, JSONHeaders, cache, CACHE_VERSION);
+
+      const results = [];
+
+      for (const item of safeItems) {
+        const {
+          line,
+          product,
+          amount,
+          best_before_date,
+          price
+        } = item;
+
+        // Basic validation per line
+        if (!product || typeof amount !== "number") {
+          results.push({
+            line,
+            status: "error",
+            error: "invalid_line"
+          });
+          continue;
+        }
+
+        //
+        // 1️⃣ Resolve product (fuzzy, same logic as shopping list)
+        //
+        const query = normalize(product);
+
+        const matches = products
+          .map(p => ({
+            id: p.id,
+            name: p.name,
+            score: p.name ? scoreProduct(normalize(p.name), query) : 0
+          }))
+          .filter(p => p.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+
+        if (matches.length === 0) {
+          results.push({
+            line,
+            status: "error",
+            error: "product_not_found",
+            product
+          });
+          continue;
+        }
+
+        if (matches.length > 1 && matches[0].score < 100) {
+          results.push({
+            line,
+            status: "error",
+            error: "multiple_products",
+            candidates: matches.map(m => ({
+              id: m.id,
+              name: m.name
+            }))
+          });
+          continue;
+        }
+
+        const productId = matches[0].id;
+
+        //
+        // 2️⃣ Fetch product details (unit + pricing context)
+        //
+        let details;
+        try {
+          const detailsResp = await fetch(
+            `${upstreamBase}/api/stock/products/${productId}`,
+            { headers: JSONHeaders }
+          );
+          if (!detailsResp.ok) throw new Error();
+          details = await detailsResp.json();
+        } catch {
+          results.push({
+            line,
+            status: "error",
+            error: "product_details_unavailable"
+          });
+          continue;
+        }
+
+        const quId =
+          details.product?.qu_id_stock ??
+          details.qu_id_stock;
+
+        //
+        // 3️⃣ Add stock
+        //
+        const addResp = await fetch(
+          `${upstreamBase}/api/objects/products/${productId}/add`,
+          {
+            method: "POST",
+            headers: JSONHeaders,
+            body: JSON.stringify({
+              amount,
+              best_before_date,
+              qu_id: quId
+            })
+          }
+        );
+
+        if (!addResp.ok) {
+          results.push({
+            line,
+            status: "error",
+            error: "add_failed"
+          });
+          continue;
+        }
+
+        //
+        // 4️⃣ Optional price capture
+        //
+        if (typeof price === "number") {
+          await fetch(
+            `${upstreamBase}/api/objects/product_prices`,
+            {
+              method: "POST",
+              headers: JSONHeaders,
+              body: JSON.stringify({
+                product_id: productId,
+                price,
+                store_id: details.last_shopping_location_id ?? null
+              })
+            }
+          );
+        }
+
+        //
+        // 5️⃣ Success result
+        //
+        results.push({
+          line,
+          status: "added",
+          product: {
+            id: productId,
+            name: matches[0].name
+          },
+          interpreted_as: {
+            amount,
+            unit: details.quantity_unit_stock?.name ?? "stock unit",
+            price
+          }
+        });
+      }
+
+      //
+      // 6️⃣ Final bulk response
+      //
+      return new Response(JSON.stringify({
+        status: "completed",
+        summary: {
+          total: safeItems.length,
+          added: results.filter(r => r.status === "added").length,
+          errors: results.filter(r => r.status === "error").length
+        },
+        results
+      }), { headers: { "Content-Type": "application/json" }});
+    }
     
     //
     //
@@ -764,7 +1097,7 @@ export default {
     const upstreamReq = new Request(upstreamUrl, {
       method: req.method,
       body: body,
-      headers: headers,
+      headers: JSONHeaders,
       redirect: "manual" // IMPORTANT: do not follow Access redirects
     });
 
