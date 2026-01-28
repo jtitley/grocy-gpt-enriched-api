@@ -1,13 +1,26 @@
 openapi: 3.1.0
 
 info:
-  title: Grocy API (Limited + Enriched via Cloudflare Worker)
+  title: Grocy API (Enriched via Cloudflare Worker)
+  version: "1.2.2"
   description: >
-    Limited Grocy access via a Cloudflare Worker.
-    Native Grocy object endpoints are proxied as-is.
-    Enriched endpoints provide GPT-safe, denormalized views
-    with human-readable fields and fuzzy resolution.
-  version: "1.2.1"
+    GPT-oriented Grocy API exposed via a Cloudflare Worker.
+    Native Grocy endpoints are proxied with strict limits.
+    Enriched endpoints provide denormalized, human-readable responses
+    with fuzzy resolution and partial-success semantics.
+
+    IMPORTANT BEHAVIOUR NOTES:
+    - Product name resolution is fuzzy and may be ambiguous.
+    - Bulk operations may partially succeed.
+    - Quantity units and pricing are informational only.
+    - Hard limits are enforced silently by the server.
+
+  x-capabilities:
+    fuzzy_product_resolution: true
+    partial_success_bulk_operations: true
+    implicit_unit_handling: true
+    silent_truncation: true
+    denormalized_responses: true
 
 servers:
   - url: https://grocy-butler.joshscomputer.com
@@ -24,7 +37,7 @@ components:
   schemas:
 
     # -----------------------------
-    # Common error schemas
+    # Error schemas
     # -----------------------------
     ProductNotFound:
       type: object
@@ -130,8 +143,10 @@ components:
         pricing:
           type: object
           description: >
-            Pricing context derived from last purchase.
-            Includes conversion factors for GPT-side reasoning.
+            Pricing context derived from the last recorded purchase.
+            Values are informational only and may include unit identifiers
+            and conversion factors. Do not assume arithmetic correctness
+            unless explicitly instructed.
           additionalProperties: true
       required: [product_id, product_name, amount]
 
@@ -158,6 +173,7 @@ components:
           type: string
         matches:
           type: array
+          maxItems: 10
           items:
             $ref: "#/components/schemas/EnrichedProductSearchResult"
       required: [query, matches]
@@ -170,6 +186,9 @@ paths:
   /api/enriched/stock:
     get:
       summary: Get inventory (enriched)
+      description: >
+        Returns a truncated, enriched view of current stock.
+        The server enforces a hard item limit and may silently truncate results.
       operationId: getStock
       responses:
         "200":
@@ -187,11 +206,14 @@ paths:
 
   /api/enriched/stock/add:
     post:
-      summary: Add inventory (enriched, receipt-friendly)
+      summary: Add inventory (enriched)
       description: >
-        Adds inventory using a human-readable product name.
-        Product is resolved fuzzily.
-        Unit and store fields are accepted as hints but currently ignored.
+        Adds inventory using a fuzzy product name match.
+        If multiple products match, the client must stop
+        and request clarification from the user.
+
+        Fields such as unit and store are accepted for compatibility
+        but are currently ignored by the system.
       operationId: addStock
       requestBody:
         required: true
@@ -202,52 +224,25 @@ paths:
               properties:
                 product:
                   type: string
-                  description: Product name from receipt
                 amount:
                   type: number
-                  description: Quantity purchased
                 unit:
                   type: string
-                  description: Optional hint only; currently ignored
+                  description: Accepted for compatibility only. Currently ignored.
                 price:
                   type: number
-                  description: Optional price captured
                 store:
                   type: string
-                  description: Optional hint only; currently ignored
+                  description: Accepted for compatibility only. Currently ignored.
                 best_before_date:
                   type: string
                   format: date
               required: [product, amount]
-              example:
-                product: Milk
-                amount: 2
-                price: 3.40
       responses:
         "200":
           description: Inventory added
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [added]
-                  product:
-                    type: object
-                    properties:
-                      id:
-                        type: integer
-                      name:
-                        type: string
-                    required: [id, name]
-                  interpreted_as:
-                    type: object
-                    additionalProperties: true
-                required: [status, product]
         "400":
-          description: Invalid request or ambiguous product
+          description: Product resolution failed
           content:
             application/json:
               schema:
@@ -261,11 +256,12 @@ paths:
 
   /api/enriched/stock/add/bulk:
     post:
-      summary: Add inventory in bulk (receipt-driven, enriched)
+      summary: Add inventory in bulk
       description: >
         Adds multiple inventory items in a single request.
-        Each item is processed independently; partial success is allowed.
-        Maximum 25 items per request.
+        Each line is processed independently.
+        Partial success is expected and normal.
+        Maximum of 25 items are processed per request.
       operationId: addStockBulk
       requestBody:
         required: true
@@ -276,7 +272,6 @@ paths:
               properties:
                 store:
                   type: string
-                  description: Optional store name
                 purchased_at:
                   type: string
                   format: date
@@ -288,7 +283,6 @@ paths:
                     properties:
                       line:
                         type: integer
-                        description: Receipt line number
                       product:
                         type: string
                       amount:
@@ -302,32 +296,7 @@ paths:
               required: [items]
       responses:
         "200":
-          description: Bulk inventory processed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [completed]
-                  summary:
-                    type: object
-                    properties:
-                      total:
-                        type: integer
-                      added:
-                        type: integer
-                      errors:
-                        type: integer
-                  results:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-                required: [status, summary, results]
-        "400":
-          description: Invalid request
+          description: Bulk operation completed
         "401":
           description: Unauthorized
         "502":
@@ -383,7 +352,14 @@ paths:
         "200":
           description: Item added
         "400":
-          description: Invalid request or ambiguous product
+          description: Product resolution failed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProductNotFound"
+                  - $ref: "#/components/schemas/MultipleProducts"
+                  - $ref: "#/components/schemas/MultipleShoppingLists"
         "401":
           description: Unauthorized
         "502":
@@ -423,12 +399,11 @@ paths:
 
   /api/enriched/products/create:
     post:
-      summary: Create a new product (enriched)
+      summary: Create product (enriched)
       description: >
         Creates a new product using human-readable fields.
-        Resolves mandatory location and quantity units.
-        Performs de-duplication and cache-safe writes.
-        Optionally attaches a product image via URL.
+        Mandatory fields are resolved automatically.
+        Duplicate product names are rejected.
       operationId: createProduct
       requestBody:
         required: true
@@ -445,15 +420,6 @@ paths:
                   type: string
                 quantity_units:
                   type: object
-                  properties:
-                    stock:
-                      type: string
-                    purchase:
-                      type: string
-                    consume:
-                      type: string
-                    price:
-                      type: string
                 product_group:
                   type: string
                 image_url:
@@ -463,31 +429,6 @@ paths:
       responses:
         "200":
           description: Product created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [created]
-                  product:
-                    type: object
-                    properties:
-                      id:
-                        type: integer
-                      name:
-                        type: string
-                    required: [id, name]
-                  image:
-                    type: object
-                    properties:
-                      attached:
-                        type: boolean
-                      error:
-                        type: string
-                        nullable: true
-                required: [status, product]
         "400":
           description: Invalid request or duplicate product
         "401":
