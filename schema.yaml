@@ -138,6 +138,86 @@ security:
   - BearerAuth: []
 
 paths:
+  /api/enriched/stock/add/bulk:
+    post:
+      summary: Add inventory in bulk (receipt-driven, enriched)
+      description: >
+        Adds multiple inventory items in a single request.
+        Intended for receipt-based workflows driven by GPT.
+        Each item is processed independently; partial success is allowed.
+      operationId: addStockBulk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                store:
+                  type: string
+                  description: Optional store name
+                purchased_at:
+                  type: string
+                  format: date
+                items:
+                  type: array
+                  maxItems: 25
+                  items:
+                    type: object
+                    properties:
+                      line:
+                        type: integer
+                        description: Receipt line number
+                      product:
+                        type: string
+                        description: Product name from receipt
+                      amount:
+                        type: number
+                      best_before_date:
+                        type: string
+                        format: date
+                      price:
+                        type: number
+                    required:
+                      - product
+                      - amount
+              required:
+                - items
+      responses:
+        "200":
+          description: Bulk inventory processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [completed]
+                  summary:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      added:
+                        type: integer
+                      errors:
+                        type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                  - status
+                  - summary
+                  - results
+        "400":  
+          description: Invalid request
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
 
   /api/enriched/products/create:
     post:
@@ -147,7 +227,7 @@ paths:
         Resolves mandatory location and quantity units.
         Optionally attaches a product image via URL.
         Performs de-duplication and cache-safe writes.
-      operationId: createProductEnriched
+      operationId: createProduct
       requestBody:
         required: true
         content:
@@ -180,6 +260,7 @@ paths:
                 image_url:
                   type: string
                   format: uri
+                  description: The URL must be directly fetchable from a server environment. Some image hosts block server-side requests.
               required: [name]
       responses:
         "200":
@@ -293,16 +374,14 @@ paths:
                   type: integer
               required: [product, amount]
 
-  /api/objects/products/{productId}/add:
+  /api/enriched/stock/add:
     post:
-      summary: Add stock for a product
-      operationId: addInventory
-      parameters:
-        - name: productId
-          in: path
-          required: true
-          schema:
-            type: integer
+      summary: Add inventory (enriched, receipt-friendly)
+      description: >
+        Adds inventory using a human-readable product name.
+        Intended for receipt-based workflows driven by GPT.
+        Resolves products fuzzily and applies Grocy-safe defaults.
+      operationId: addStock
       requestBody:
         required: true
         content:
@@ -310,8 +389,55 @@ paths:
             schema:
               type: object
               properties:
+                product:
+                  type: string
+                  description: Product name from receipt
                 amount:
                   type: number
+                  description: Quantity purchased
+                unit:
+                  type: string
+                  description: Optional receipt unit (e.g. bottle, pack)
+                price:
+                  type: number
+                  description: Optional total or unit price
+                store:
+                  type: string
+                  description: Optional store name
                 best_before_date:
                   type: string
                   format: date
+              required:
+                - product
+                - amount
+      responses:
+        "200":
+          description: Inventory added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [added]
+                  product:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                    required: [id, name]
+                  interpreted_as:
+                    type: object
+                    additionalProperties: true
+                required:
+                  - status
+                  - product
+        "400":
+          description: Invalid request or ambiguous product
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
