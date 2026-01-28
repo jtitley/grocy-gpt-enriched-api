@@ -23,6 +23,15 @@ export default {
       "Content-Type": "application/json"
     };
 
+    const DEFAULT_LOCATION_NAME = env.DEFAULT_LOCATION_NAME || "Fridge";
+    
+    const DEFAULT_UNITS = {
+      stock: env.DEFAULT_STOCK_UNIT || "Piece",
+      purchase: env.DEFAULT_PURCHASE_UNIT || "Piece",
+      consume: env.DEFAULT_CONSUME_UNIT || "Piece",
+      price: env.DEFAULT_PRICE_UNIT || "Piece"
+    };
+
     async function getCachedProducts(env, headers, cache, CACHE_VERSION) {
       const cacheKey = new Request(
         `https://cache.local/${CACHE_VERSION}/grocy/products`
@@ -489,6 +498,252 @@ export default {
         }))
       }), { headers: { "Content-Type": "application/json" }});
     }
+
+    //
+    //
+    // --- ENRICHED PRODUCT CREATE (MANDATORY FIELDS RESOLVED) ---
+    //
+    //
+    if (url.pathname === "/api/enriched/products/create" && req.method === "POST") {
+      const body = await req.json();
+
+      const {
+        name,
+        description,
+        default_location,
+        quantity_units = {},
+        product_group,
+        image_url
+      } = body;
+
+      if (!name || typeof name !== "string") {
+        return new Response("Invalid request", { status: 400 });
+      }
+
+      const cache = caches.default;
+
+      //
+      // 1️⃣ De-dupe check (exact name, normalized)
+      //
+      const products = await getCachedProducts(env, headers, cache, CACHE_VERSION);
+      const normalizedName = normalize(name);
+
+      if (products.some(p => normalize(p.name) === normalizedName)) {
+        return new Response(JSON.stringify({
+          error: "product_exists",
+          product: name
+        }), { headers: { "Content-Type": "application/json" }});
+      }
+
+      //
+      // 2️⃣ Resolve location (MANDATORY)
+      //
+      const locationName = default_location || DEFAULT_LOCATION_NAME;
+
+      const locCacheKey = new Request(
+        `https://cache.local/${CACHE_VERSION}/grocy/locations`
+      );
+
+      let locRespCached = await cache.match(locCacheKey);
+      if (!locRespCached) {
+        const resp = await fetch(
+          `${upstreamBase}/api/objects/locations`,
+          { headers }
+        );
+        if (!resp.ok) {
+          return new Response("Failed to fetch locations", { status: 502 });
+        }
+
+        locRespCached = new Response(await resp.text(), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "max-age=21600"
+          }
+        });
+
+        await cache.put(locCacheKey, locRespCached.clone());
+      }
+
+      const locations = await locRespCached.json();
+      const location = locations.find(
+        l => normalize(l.name) === normalize(locationName)
+      );
+
+      if (!location) {
+        return new Response(JSON.stringify({
+          error: "invalid_location",
+          location: locationName
+        }), { headers: { "Content-Type": "application/json" }});
+      }
+
+      //
+      // 3️⃣ Resolve quantity units (ALL 4 MANDATORY)
+      //
+      const quCacheKey = new Request(
+        `https://cache.local/${CACHE_VERSION}/grocy/quantity-units`
+      );
+
+      let quRespCached = await cache.match(quCacheKey);
+      if (!quRespCached) {
+        const resp = await fetch(
+          `${upstreamBase}/api/objects/quantity_units`,
+          { headers }
+        );
+        if (!resp.ok) {
+          return new Response("Failed to fetch quantity units", { status: 502 });
+        }
+
+        quRespCached = new Response(await resp.text(), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "max-age=21600"
+          }
+        });
+
+        await cache.put(quCacheKey, quRespCached.clone());
+      }
+
+      const units = await quRespCached.json();
+
+      function resolveUnit(name) {
+        return units.find(
+          u => normalize(u.name) === normalize(name)
+        );
+      }
+
+      const resolvedUnits = {
+        stock: resolveUnit(quantity_units.stock || DEFAULT_UNITS.stock),
+        purchase: resolveUnit(quantity_units.purchase || DEFAULT_UNITS.purchase),
+        consume: resolveUnit(quantity_units.consume || DEFAULT_UNITS.consume),
+        price: resolveUnit(quantity_units.price || DEFAULT_UNITS.price)
+      };
+
+      for (const [key, unit] of Object.entries(resolvedUnits)) {
+        if (!unit) {
+          return new Response(JSON.stringify({
+            error: "invalid_quantity_unit",
+            unit: key
+          }), { headers: { "Content-Type": "application/json" }});
+        }
+      }
+
+      //
+      // 4️⃣ Resolve product group (optional)
+      //
+      let product_group_id = null;
+
+      if (product_group) {
+        const pgResp = await fetch(
+          `${upstreamBase}/api/objects/product_groups`,
+          { headers }
+        );
+        if (!pgResp.ok) {
+          return new Response("Failed to fetch product groups", { status: 502 });
+        }
+
+        const groups = await pgResp.json();
+        const match = groups.find(
+          g => normalize(g.name) === normalize(product_group)
+        );
+
+        if (!match) {
+          return new Response(JSON.stringify({
+            error: "invalid_product_group",
+            product_group
+          }), { headers: { "Content-Type": "application/json" }});
+        }
+
+        product_group_id = match.id;
+      }
+
+      //
+      // 5️⃣ Create product (VALID GROCY CONTRACT)
+      //
+      const createResp = await fetch(
+        `${upstreamBase}/api/objects/products`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            name,
+            description,
+            location_id: location.id,
+            qu_id_stock: resolvedUnits.stock.id,
+            qu_id_purchase: resolvedUnits.purchase.id,
+            qu_id_consume: resolvedUnits.consume.id,
+            qu_id_price: resolvedUnits.price.id,
+            product_group_id
+          })
+        }
+      );
+
+      if (!createResp.ok) {
+        return new Response("Failed to create product", { status: 502 });
+      }
+
+      const created = await createResp.json();
+      const productId = created.id;
+
+      //
+      // 6️⃣ Optional image upload (best-effort)
+      //
+      let imageAttached = false;
+
+      if (image_url) {
+        try {
+          const imgResp = await fetch(image_url);
+          const ct = imgResp.headers.get("content-type") || "";
+
+          if (imgResp.ok && ct.startsWith("image/")) {
+            const blob = await imgResp.blob();
+            const form = new FormData();
+            form.append("file", blob, "product.jpg");
+
+            const uploadResp = await fetch(
+              `${upstreamBase}/api/files/productpictures/${productId}`,
+              {
+                method: "POST",
+                headers: {
+                  ...headers,
+                  "Content-Type": undefined
+                },
+                body: form
+              }
+            );
+
+            imageAttached = uploadResp.ok;
+          }
+        } catch (_) {}
+      }
+
+      //
+      // 7️⃣ Invalidate product cache (REQUIRED)
+      //
+      const productsCacheKey = new Request(
+        `https://cache.local/${CACHE_VERSION}/grocy/products`
+      );
+      await cache.delete(productsCacheKey);
+
+      //
+      // 8️⃣ Response
+      //
+      return new Response(JSON.stringify({
+        status: "created",
+        product: {
+          id: productId,
+          name
+        },
+        location: location.name,
+        quantity_units: {
+          stock: resolvedUnits.stock.name,
+          purchase: resolvedUnits.purchase.name,
+          consume: resolvedUnits.consume.name,
+          price: resolvedUnits.price.name
+        },
+        image: { attached: imageAttached }
+      }), { headers: { "Content-Type": "application/json" }});
+    }
+
     
     //
     //
