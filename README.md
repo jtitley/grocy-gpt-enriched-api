@@ -240,8 +240,3 @@ If something breaks:
 The Worker is designed to be boring in production.
 
 That is intentional.
-
----
-
-If you paste this into GitHub as `README.md`, it will render correctly.
-If you want **shorter**, **diagram-heavy**, or **threat-model** versions later, we can derive them cleanly from this without touching it again.
