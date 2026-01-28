@@ -5,78 +5,27 @@ info:
   description: >
     Limited Grocy access via a Cloudflare Worker.
     Native Grocy object endpoints are proxied as-is.
-    Enriched endpoints provide GPT-safe, denormalized views.
-  version: "1.2.0"
+    Enriched endpoints provide GPT-safe, denormalized views
+    with human-readable fields and fuzzy resolution.
+  version: "1.2.1"
 
 servers:
   - url: https://grocy-butler.joshscomputer.com
 
+security:
+  - BearerAuth: []
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
   schemas:
-    EnrichedStockItem:
-      type: object
-      properties:
-        stock_id:
-          type: integer
-        product_id:
-          type: integer
-        product_name:
-          type: string
-        amount:
-          type: number
-        best_before_date:
-          type: string
-          format: date
-      required: [stock_id, product_id, product_name, amount]
 
-    EnrichedShoppingList:
-      type: object
-      properties:
-        list:
-          type: object
-          properties:
-            id:
-              type: integer
-            name:
-              type: string
-          required: [id, name]
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/EnrichedShoppingListItem"
-      required: [list, items]
-
-    EnrichedShoppingListItem:
-      type: object
-      properties:
-        product_id:
-          type: integer
-        product_name:
-          type: string
-        amount:
-          type: number
-        note:
-          type: string
-      required: [product_id, product_name, amount]
-
-    MultipleShoppingLists:
-      type: object
-      properties:
-        error:
-          type: string
-          enum: [multiple_lists]
-        lists:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: integer
-              name:
-                type: string
-            required: [id, name]
-      required: [error, lists]
-
+    # -----------------------------
+    # Common error schemas
+    # -----------------------------
     ProductNotFound:
       type: object
       properties:
@@ -105,6 +54,90 @@ components:
             required: [id, name]
       required: [error, products]
 
+    MultipleShoppingLists:
+      type: object
+      properties:
+        error:
+          type: string
+          enum: [multiple_lists]
+        lists:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+            required: [id, name]
+      required: [error, lists]
+
+    # -----------------------------
+    # Stock
+    # -----------------------------
+    EnrichedStockItem:
+      type: object
+      properties:
+        stock_id:
+          type: integer
+        product_id:
+          type: integer
+        product_name:
+          type: string
+        amount:
+          type: number
+        best_before_date:
+          type: string
+          format: date
+          nullable: true
+      required: [stock_id, product_id, product_name, amount]
+
+    # -----------------------------
+    # Shopping list
+    # -----------------------------
+    EnrichedShoppingList:
+      type: object
+      properties:
+        list:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+          required: [id, name]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EnrichedShoppingListItem"
+      required: [list, items]
+
+    EnrichedShoppingListItem:
+      type: object
+      properties:
+        product_id:
+          type: integer
+        product_name:
+          type: string
+        amount:
+          type: number
+        note:
+          type: string
+          nullable: true
+        last_store:
+          type: string
+          nullable: true
+        pricing:
+          type: object
+          description: >
+            Pricing context derived from last purchase.
+            Includes conversion factors for GPT-side reasoning.
+          additionalProperties: true
+      required: [product_id, product_name, amount]
+
+    # -----------------------------
+    # Product search
+    # -----------------------------
     EnrichedProductSearchResult:
       type: object
       properties:
@@ -129,22 +162,110 @@ components:
             $ref: "#/components/schemas/EnrichedProductSearchResult"
       required: [query, matches]
 
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-
-security:
-  - BearerAuth: []
-
 paths:
+
+  # =============================
+  # Stock
+  # =============================
+  /api/enriched/stock:
+    get:
+      summary: Get inventory (enriched)
+      operationId: getStock
+      responses:
+        "200":
+          description: Enriched inventory retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EnrichedStockItem"
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
+  /api/enriched/stock/add:
+    post:
+      summary: Add inventory (enriched, receipt-friendly)
+      description: >
+        Adds inventory using a human-readable product name.
+        Product is resolved fuzzily.
+        Unit and store fields are accepted as hints but currently ignored.
+      operationId: addStock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product:
+                  type: string
+                  description: Product name from receipt
+                amount:
+                  type: number
+                  description: Quantity purchased
+                unit:
+                  type: string
+                  description: Optional hint only; currently ignored
+                price:
+                  type: number
+                  description: Optional price captured
+                store:
+                  type: string
+                  description: Optional hint only; currently ignored
+                best_before_date:
+                  type: string
+                  format: date
+              required: [product, amount]
+              example:
+                product: Milk
+                amount: 2
+                price: 3.40
+      responses:
+        "200":
+          description: Inventory added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [added]
+                  product:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                    required: [id, name]
+                  interpreted_as:
+                    type: object
+                    additionalProperties: true
+                required: [status, product]
+        "400":
+          description: Invalid request or ambiguous product
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProductNotFound"
+                  - $ref: "#/components/schemas/MultipleProducts"
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
   /api/enriched/stock/add/bulk:
     post:
       summary: Add inventory in bulk (receipt-driven, enriched)
       description: >
         Adds multiple inventory items in a single request.
-        Intended for receipt-based workflows driven by GPT.
         Each item is processed independently; partial success is allowed.
+        Maximum 25 items per request.
       operationId: addStockBulk
       requestBody:
         required: true
@@ -170,7 +291,6 @@ paths:
                         description: Receipt line number
                       product:
                         type: string
-                        description: Product name from receipt
                       amount:
                         type: number
                       best_before_date:
@@ -178,11 +298,8 @@ paths:
                         format: date
                       price:
                         type: number
-                    required:
-                      - product
-                      - amount
-              required:
-                - items
+                    required: [product, amount]
+              required: [items]
       responses:
         "200":
           description: Bulk inventory processed
@@ -208,12 +325,97 @@ paths:
                     items:
                       type: object
                       additionalProperties: true
-                required:
-                  - status
-                  - summary
-                  - results
-        "400":  
+                required: [status, summary, results]
+        "400":
           description: Invalid request
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
+  # =============================
+  # Shopping list
+  # =============================
+  /api/enriched/shopping_list:
+    get:
+      summary: Get shopping list (enriched)
+      operationId: getShoppingList
+      parameters:
+        - name: list_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Shopping list retrieved
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/EnrichedShoppingList"
+                  - $ref: "#/components/schemas/MultipleShoppingLists"
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
+  /api/enriched/shopping_list/add:
+    post:
+      summary: Add item to shopping list (enriched)
+      operationId: addToShoppingList
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product:
+                  type: string
+                amount:
+                  type: number
+                note:
+                  type: string
+                shopping_list_id:
+                  type: integer
+              required: [product, amount]
+      responses:
+        "200":
+          description: Item added
+        "400":
+          description: Invalid request or ambiguous product
+        "401":
+          description: Unauthorized
+        "502":
+          description: Upstream Grocy error
+
+  # =============================
+  # Products
+  # =============================
+  /api/enriched/products/search:
+    get:
+      summary: Search products (enriched)
+      operationId: searchProducts
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 5
+            minimum: 1
+            maximum: 10
+      responses:
+        "200":
+          description: Product search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrichedProductSearchResponse"
         "401":
           description: Unauthorized
         "502":
@@ -225,8 +427,8 @@ paths:
       description: >
         Creates a new product using human-readable fields.
         Resolves mandatory location and quantity units.
-        Optionally attaches a product image via URL.
         Performs de-duplication and cache-safe writes.
+        Optionally attaches a product image via URL.
       operationId: createProduct
       requestBody:
         required: true
@@ -237,12 +439,10 @@ paths:
               properties:
                 name:
                   type: string
-                  description: Product name (must be unique)
                 description:
                   type: string
                 default_location:
                   type: string
-                  description: Human-readable location name
                 quantity_units:
                   type: object
                   properties:
@@ -254,13 +454,11 @@ paths:
                       type: string
                     price:
                       type: string
-                  description: Human-readable quantity unit names
                 product_group:
                   type: string
                 image_url:
                   type: string
                   format: uri
-                  description: The URL must be directly fetchable from a server environment. Some image hosts block server-side requests.
               required: [name]
       responses:
         "200":
@@ -286,157 +484,12 @@ paths:
                     properties:
                       attached:
                         type: boolean
-                    required: [attached]
+                      error:
+                        type: string
+                        nullable: true
                 required: [status, product]
         "400":
           description: Invalid request or duplicate product
-        "401":
-          description: Unauthorized
-        "502":
-          description: Upstream Grocy error
-
-  /api/enriched/stock:
-    get:
-      summary: Get inventory
-      operationId: getStock
-      responses:
-        "200":
-          description: Enriched inventory retrieved
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/EnrichedStockItem"
-
-  /api/enriched/shopping_list:
-    get:
-      summary: Get shopping list (enriched)
-      operationId: getShoppingList
-      parameters:
-        - name: list_id
-          in: query
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: Shopping list retrieved
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: "#/components/schemas/EnrichedShoppingList"
-                  - $ref: "#/components/schemas/MultipleShoppingLists"
-
-  /api/enriched/products/search:
-    get:
-      summary: Search products (enriched)
-      operationId: searchProducts
-      parameters:
-        - name: q
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 5
-            minimum: 1
-            maximum: 10
-      responses:
-        "200":
-          description: Product search results
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EnrichedProductSearchResponse"
-
-  /api/enriched/shopping_list/add:
-    post:
-      summary: Add item to shopping list (enriched)
-      operationId: addToShoppingList
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                product:
-                  type: string
-                amount:
-                  type: number
-                note:
-                  type: string
-                shopping_list_id:
-                  type: integer
-              required: [product, amount]
-
-  /api/enriched/stock/add:
-    post:
-      summary: Add inventory (enriched, receipt-friendly)
-      description: >
-        Adds inventory using a human-readable product name.
-        Intended for receipt-based workflows driven by GPT.
-        Resolves products fuzzily and applies Grocy-safe defaults.
-      operationId: addStock
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                product:
-                  type: string
-                  description: Product name from receipt
-                amount:
-                  type: number
-                  description: Quantity purchased
-                unit:
-                  type: string
-                  description: Optional receipt unit (e.g. bottle, pack)
-                price:
-                  type: number
-                  description: Optional total or unit price
-                store:
-                  type: string
-                  description: Optional store name
-                best_before_date:
-                  type: string
-                  format: date
-              required:
-                - product
-                - amount
-      responses:
-        "200":
-          description: Inventory added
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [added]
-                  product:
-                    type: object
-                    properties:
-                      id:
-                        type: integer
-                      name:
-                        type: string
-                    required: [id, name]
-                  interpreted_as:
-                    type: object
-                    additionalProperties: true
-                required:
-                  - status
-                  - product
-        "400":
-          description: Invalid request or ambiguous product
         "401":
           description: Unauthorized
         "502":
